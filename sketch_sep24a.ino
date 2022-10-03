@@ -181,8 +181,8 @@ void setup() {
   pinMode(KNOB, INPUT);
 
   Serial.begin(115200);
-  MasterIdx = 0;
-  SlaveIdx = 0;
+  MasterIdx = 1;
+  SlaveIdx = 1;
   propertyCmd = 'R';
   valueCmd = 6;
   rawValue = 0;
@@ -221,18 +221,18 @@ void loop() {
     {
       //STOP KNOB value capture during property changing process
       propertyShiftFlag = 1;
-
+      //SlaveIdx is added at last to the next property, repeatly changing from 0 ~ 2
+      SlaveIdx ++;
       //Ensure the KNOB is tuning the current property
-      if(SlaveIdx == NUM_MODE) SlaveIdx = 0;
+      if(SlaveIdx > NUM_MODE) SlaveIdx = 1;
 
-      if(SlaveIdx == 0) propertyCmd = 'R';
-      if(SlaveIdx == 1) propertyCmd = 'N';
-      if(SlaveIdx == 2) propertyCmd = 'P';
+      if(SlaveIdx == 1) propertyCmd = 'R';
+      if(SlaveIdx == 2) propertyCmd = 'N';
+      if(SlaveIdx == 3) propertyCmd = 'P';
 
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 
-      //SlaveIdx is added at last to the next property, repeatly changing from 0 ~ 2
-      SlaveIdx ++;
+
       keyNotPressed = 0;
     }
   }else if(digitalRead(SW_SLAVE) == 1){
@@ -248,19 +248,17 @@ void loop() {
     {
       idShiftFlag = 1;
       //Ensure the KNOB is tuning the current WT
-      if(MasterIdx > NUM_WT) MasterIdx = 0;
+      MasterIdx ++;
+      if(MasterIdx > NUM_WT) MasterIdx = 1;
 
       digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
 
-      MasterIdx ++;
       keyNotPressed2 = 0;
     }
   }else if(digitalRead(SW_MASTER) == 1){
     idShiftFlag = 0;
     keyNotPressed2 = 1;
   }
-
-
 
 }
 
