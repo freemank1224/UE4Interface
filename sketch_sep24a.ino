@@ -25,7 +25,9 @@ uint8_t keyNotPressed = 0;
 uint8_t keyNotPressed2 = 0;
 uint16_t MasterIdx, SlaveIdx;
 char propertyCmd;
+uint8_t propertyShiftFlag, idShiftFlag;
 uint16_t valueCmd, fluctCmd;
+uint16_t rawValue, scaledValue;
 uint32_t rotorFrequencySetpoint;
 uint32_t nacelleFrequencySetpoint;
 uint32_t currentNacelleAngle;
@@ -33,13 +35,15 @@ uint32_t nacelleStepSetpoint; // Angles in the unit of micro step
 uint32_t angleCounter, angleTarget;
 uint32_t tickCounter, tickTarget; // MUST use ticks in timer
 
-
+char propertyArray[] = {'R', 'N', 'P'};
+uint32_t rotationValueCmd, orientationValueCmd, pitchValueCmd;
 
 String FLAG_DIR;
 
 ///////////// Generate Timer ////////////////////
 Timer<1, micros> rotor_timer;
 Timer<1, micros> nacelle_timer;
+Timer<2, millis> period50_timer, period10_timer;
 
 //////////////////  Timer Tasks  ///////////////// 
 bool toggle_led(void *) {
@@ -47,14 +51,16 @@ bool toggle_led(void *) {
   return true; // keep timer active? true
 }
 
+////////////////  Pulse Generate Task : Free ///////////////
+//////////////// Usage: control rotation RPM /////////////// 
 bool move_motor(void *)
 {
   digitalWrite(PINOUT_rotorMotorPUL, !digitalRead(PINOUT_rotorMotorPUL));
-  // digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
-  // Serial.println(digitalRead(PINOUT_rotorMotorPUL));
   return true;
 }
 
+//////////////  Pulse Generate Task : With Break ////////////// 
+//////////////// Usage: control rotation Angle /////////////// 
 bool move_motor_count(void *)
 {
   tickCounter ++;
@@ -74,12 +80,95 @@ bool move_motor_count(void *)
 }
 
 
+//////////////  Communicating with UE Task ////////////// 
 bool R2U(void *)
 {
-  sendCommand(2, 'r', 100, 2);
+
+  if(propertyCmd == 'R'){
+    sendCommand(MasterIdx, 'R', rotationValueCmd, fluctCmd);
+  }
+  if(propertyCmd == 'N'){
+    sendCommand(MasterIdx, 'N', orientationValueCmd, fluctCmd);
+  }
+  if(propertyCmd == 'P'){
+    sendCommand(MasterIdx, 'P', pitchValueCmd, fluctCmd);
+  }
+
   return true;
 }
-/////////////////////////////////////////////////////////////
+
+//////////////  Update Property Values of WT ////////////// 
+bool UPDATE(void *)
+{
+  rawValue = 0;
+
+  if(propertyShiftFlag != 1 && idShiftFlag != 1)
+  {
+    for(uint8_t i=0; i<5; ++i)
+    {
+      rawValue += analogRead(KNOB);
+    }
+    valueCmd = rawValue / 5;
+
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+  }
+
+  if(propertyCmd == 'R')
+  {
+    scaledValue = reScale(valueCmd, RPM_MIN, RPM_MAX);
+    valueCmd = scaledValue;
+    // Set the target rpm of the WT
+    rotationValueCmd = valueCmd;
+  }
+
+  if(propertyCmd == 'N')
+  {
+    scaledValue = reScale(valueCmd, 0, 360);
+    valueCmd = scaledValue;
+
+    // Set the target orientation angle
+    angleTarget = valueCmd;
+    orientationValueCmd = valueCmd;
+  }
+
+  if(propertyCmd == 'P')
+  {
+    scaledValue = reScale(valueCmd, PITCH_MIN, PITCH_MAX);
+    valueCmd = scaledValue;
+
+    pitchValueCmd = valueCmd;
+  }
+
+  ///////////// Control Motor ///////////////
+  // To MOTOR --> ROTOR
+  digitalWrite(PINOUT_rotorMotorDIR, HIGH);
+  rotorFrequencySetpoint = setFrequencyRotor(rotationValueCmd, 6);
+  rotor_timer.every(rotorFrequencySetpoint, move_motor);
+
+  // To MOTOR --> NACELLE
+  if(abs((int16_t)angleTarget - (int16_t)currentNacelleAngle) > 180){
+    digitalWrite(PINOUT_nacelleMotorDIR, HIGH);
+  }else{
+    digitalWrite(PINOUT_nacelleMotorDIR, LOW);
+  }
+  // Calculate equivalent ticks using angle error: target - current
+  nacelleStepSetpoint = getPulseTicks(((int16_t)angleTarget - (int16_t)currentNacelleAngle), 6);
+  tickTarget = nacelleStepSetpoint;
+  // Calculate frequency
+  nacelleFrequencySetpoint = setFrequencyNacelle(NACELLE_yawRate, 6);
+  // Serial.println("~~~~~~~~~~~~~");
+  // Serial.println(nacelleFrequencySetpoint);
+  // Serial.println("~~~~~~~~~~~~~");
+
+  nacelle_timer.every(nacelleFrequencySetpoint, move_motor_count);
+
+  // Serial.println("******************");
+  // Serial.println(currentNacelleAngle);
+  // Serial.println("******************");
+
+  return true;
+}
+/////////////////////////////////////////////////////////
 
 void setup() {
 
@@ -97,9 +186,12 @@ void setup() {
   SlaveIdx = 0;
   propertyCmd = 'R';
   valueCmd = 6;
+  rawValue = 0;
   if(propertyCmd == 'N') fluctCmd = 0;
   if(propertyCmd == 'R') fluctCmd = 2;
   if(propertyCmd == 'P') fluctCmd = 0;
+
+  propertyShiftFlag = 0;
 
   rotorFrequencySetpoint = 1000;
   nacelleFrequencySetpoint = 1000;
@@ -108,14 +200,19 @@ void setup() {
 
   // call the toggle_led function every 1000 millis (1 second)
   rotor_timer.every(1000, move_motor, PINOUT_rotorMotorPUL);
+  period50_timer.every(50, R2U);
+  period10_timer.every(10, UPDATE);
   // nacelle_timer.every(1000, move_motor_count);
 }
 
 void loop() {
-  uint16_t tempValue;
+  uint16_t scaledValue;
 
+  // Tick the timers 
   rotor_timer.tick();
   nacelle_timer.tick();
+  period50_timer.tick();
+  period10_timer.tick();
   
   /********** SLAVE KEY : TOGGLE PROPERTYS *******/
   if(digitalRead(SW_SLAVE) == 0 && keyNotPressed == 1)
@@ -123,19 +220,24 @@ void loop() {
     delay(10);
     if(digitalRead(SW_SLAVE) == 0 && keyNotPressed == 1)
     {
-      SlaveIdx ++;
+      //STOP KNOB value capture during property changing process
+      propertyShiftFlag = 1;
+
+      //Ensure the KNOB is tuning the current property
       if(SlaveIdx == NUM_MODE) SlaveIdx = 0;
-      // Serial.println(SlaveIdx);
 
       if(SlaveIdx == 0) propertyCmd = 'R';
       if(SlaveIdx == 1) propertyCmd = 'N';
       if(SlaveIdx == 2) propertyCmd = 'P';
 
-      // Serial.println(propertyCmd);
-
+      //SlaveIdx is added at last to the next property, repeatly changing from 0 ~ 2
+      SlaveIdx ++;
       keyNotPressed = 0;
     }
-  }else if(digitalRead(SW_SLAVE) == 1) keyNotPressed = 1;
+  }else if(digitalRead(SW_SLAVE) == 1){
+    propertyShiftFlag = 0;
+    keyNotPressed = 1;
+  }
 
   /********** MASTER KEY : TOGGLE WTs and Send Messages *******/
   if(digitalRead(SW_MASTER) == 0 && keyNotPressed2 == 1)
@@ -143,83 +245,18 @@ void loop() {
     delay(10);
     if(digitalRead(SW_MASTER) == 0 && keyNotPressed2 == 1)
     {
-      MasterIdx ++;
+      idShiftFlag = 1;
+      //Ensure the KNOB is tuning the current WT
       if(MasterIdx > NUM_WT) MasterIdx = 0;
 
-      for(int i=0; i<5; ++i)
-      {
-        valueCmd += analogRead(KNOB);
-      }
-
-      valueCmd /= 5;
-
-      // Serial.println(propertyCmd);
-
-      if(propertyCmd == 'R')
-      {
-        tempValue = reScale(valueCmd, RPM_MIN, RPM_MAX);
-        valueCmd = tempValue;
-
-        // To UNREAL 
-        sendCommand(MasterIdx, propertyCmd, valueCmd, fluctCmd);
-        // To MOTOR --> ROTOR
-        digitalWrite(PINOUT_rotorMotorDIR, HIGH);
-        rotorFrequencySetpoint = setFrequencyRotor(valueCmd, 6);
-        rotor_timer.every(rotorFrequencySetpoint, move_motor);
-        // Serial.println("Rotor TIMER Setted!");
-      }
-
-      if(propertyCmd == 'N')
-      {
-        tempValue = reScale(valueCmd, 0, 360);
-        valueCmd = tempValue;
-
-        // To UNREAL 
-        sendCommand(MasterIdx, propertyCmd, valueCmd, fluctCmd);
-        // To MOTOR --> NACELLE
-        angleTarget = valueCmd;
-        if(abs((int16_t)angleTarget - (int16_t)currentNacelleAngle) > 180){
-          digitalWrite(PINOUT_nacelleMotorDIR, HIGH);
-        }else{
-          digitalWrite(PINOUT_nacelleMotorDIR, LOW);
-        }
-
-        // Calculate equivalent ticks using angle error: target - current
-        nacelleStepSetpoint = getPulseTicks(((int16_t)angleTarget - (int16_t)currentNacelleAngle), 6);
-        tickTarget = nacelleStepSetpoint;
-        // Calculate frequency
-        nacelleFrequencySetpoint = setFrequencyNacelle(NACELLE_yawRate, 6);
-        // Serial.println("~~~~~~~~~~~~~");
-        // Serial.println(nacelleFrequencySetpoint);
-        // Serial.println("~~~~~~~~~~~~~");
-
-        nacelle_timer.every(nacelleFrequencySetpoint, move_motor_count);
-
-        // Serial.println("******************");
-        // Serial.println(currentNacelleAngle);
-        // Serial.println("******************");
-      }
-
-
-      if(propertyCmd == 'P')
-      {
-        valueCmd = reScale(valueCmd, PITCH_MIN, PITCH_MAX);
-        valueCmd = tempValue;
-
-        // To UNREAL 
-        sendCommand(MasterIdx, propertyCmd, valueCmd, fluctCmd);
-      } 
-
-
-
-
-
-
+      MasterIdx ++;
       keyNotPressed2 = 0;
 
     }
-  }else if(digitalRead(SW_MASTER) == 1) keyNotPressed2 = 1;
-
+  }else if(digitalRead(SW_MASTER) == 1){
+    idShiftFlag = 0;
+    keyNotPressed2 = 1;
+  }
 
 
 
@@ -312,6 +349,9 @@ void sendCommand(uint8_t ID, char Property, uint16_t Value, int16_t Noise)
   setStr += Value;
 
   Serial.println(setStr);
+  // Serial.print(propertyShiftFlag);
+  // Serial.print("||");
+  // Serial.println(idShiftFlag);
 
 }
 
