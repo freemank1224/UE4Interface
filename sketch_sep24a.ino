@@ -35,7 +35,7 @@ uint32_t nacelleStepSetpoint; // Angles in the unit of micro step
 uint32_t angleCounter, angleTarget;
 uint32_t tickCounter, tickTarget; // MUST use ticks in timer
 
-char propertyArray[] = {'R', 'N', 'P'};
+// char propertyArray[] = {'R', 'N', 'P'};
 uint32_t rotationValueCmd, orientationValueCmd, pitchValueCmd;
 
 String FLAG_DIR;
@@ -110,7 +110,6 @@ bool UPDATE(void *)
     }
     valueCmd = rawValue / 5;
 
-    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
   }
 
   if(propertyCmd == 'R')
@@ -230,6 +229,8 @@ void loop() {
       if(SlaveIdx == 1) propertyCmd = 'N';
       if(SlaveIdx == 2) propertyCmd = 'P';
 
+      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+
       //SlaveIdx is added at last to the next property, repeatly changing from 0 ~ 2
       SlaveIdx ++;
       keyNotPressed = 0;
@@ -249,9 +250,10 @@ void loop() {
       //Ensure the KNOB is tuning the current WT
       if(MasterIdx > NUM_WT) MasterIdx = 0;
 
+      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+
       MasterIdx ++;
       keyNotPressed2 = 0;
-
     }
   }else if(digitalRead(SW_MASTER) == 1){
     idShiftFlag = 0;
