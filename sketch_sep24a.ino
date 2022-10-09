@@ -81,6 +81,7 @@ bool move_motor_count(void *)
 
 
 //////////////  Communicating with UE Task ////////////// 
+//////////////  Bind with 50ms timer ////////////////////
 bool R2U(void *)
 {
 
@@ -98,10 +99,14 @@ bool R2U(void *)
 }
 
 //////////////  Update Property Values of WT ////////////// 
+//////////////  Bind with 10ms timer //////////////////////
 bool UPDATE(void *)
 {
   rawValue = 0;
 
+  // Continously monitoring propertyShiftFlag & idShiftFlag 
+  // When property and id stop shifting, continously read KNOB's value
+  // This algorithm aims to avoid different property values mixed together 
   if(propertyShiftFlag != 1 && idShiftFlag != 1)
   {
     for(uint8_t i=0; i<5; ++i)
@@ -109,9 +114,10 @@ bool UPDATE(void *)
       rawValue += analogRead(KNOB);
     }
     valueCmd = rawValue / 5;
-
   }
 
+  // Received value are stored in valueCmd, whether it is RPM or Angle
+  // Use IF check value property 'R', 'N' and 'P', to process different values respectively
   if(propertyCmd == 'R')
   {
     scaledValue = reScale(valueCmd, RPM_MIN, RPM_MAX);
