@@ -17,8 +17,6 @@ const uint8_t PINOUT_rotorMotorDIR = 10;
 const uint8_t PINOUT_rotorMotorPUL = 11;
 const uint8_t PINOUT_nacelleMotorDIR = 8;
 const uint8_t PINOUT_nacelleMotorPUL = 9;
-// const uint8_t PININ_SwitchMaster = 16;
-// const uint8_t PININ_SwitchSlave = 17;
 float NACELLE_yawRate; // Unit degree per second
 
 uint8_t keyNotPressed = 0;
@@ -34,146 +32,33 @@ uint32_t currentNacelleAngle;
 uint32_t nacelleStepSetpoint; // Angles in the unit of micro step
 uint32_t angleCounter, angleTarget;
 uint32_t tickCounter, tickTarget; // MUST use ticks in timer
-
 // char propertyArray[] = {'R', 'N', 'P'};
 uint32_t rotationValueCmd, orientationValueCmd, pitchValueCmd;
 
 String FLAG_DIR;
+
+/********* Function declarition ************\
+ ** Priodic Tasks with Arduino-timer *******
+\*******************************************/
+bool toggle_led(void *);
+bool move_motor(void *);
+bool move_motor_count(void *);
+bool R2U(void *);
+bool UPDATE(void *);
+uint32_t setFrequencyRotor(uint32_t targetRPM, uint16_t microStepTicks);
+uint32_t setFrequencyNacelle(float angleRate, uint16_t microStepTicks);
+uint16_t getPulseTicks(int16_t deltaAngle, uint16_t microStepTicks);
+void sendCommand(uint8_t ID, char Property, uint16_t Value, int16_t Noise);
+uint8_t receiveCommand(void);
+
 
 ///////////// Generate Timer ////////////////////
 Timer<1, micros> rotor_timer;
 Timer<1, micros> nacelle_timer;
 Timer<2, millis> period50_timer, period10_timer;
 
-//////////////////  Timer Tasks  ///////////////// 
-bool toggle_led(void *) {
-  digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN)); // toggle the LED
-  return true; // keep timer active? true
-}
-
-////////////////  Pulse Generate Task : Free ///////////////
-//////////////// Usage: control rotation RPM /////////////// 
-bool move_motor(void *)
-{
-  digitalWrite(PINOUT_rotorMotorPUL, !digitalRead(PINOUT_rotorMotorPUL));
-  return true;
-}
-
-//////////////  Pulse Generate Task : With Break ////////////// 
-//////////////// Usage: control rotation Angle /////////////// 
-bool move_motor_count(void *)
-{
-  tickCounter ++;
-  digitalWrite(PINOUT_nacelleMotorPUL, !digitalRead(PINOUT_nacelleMotorPUL));
-
-  if(tickCounter < tickTarget){
-    // Serial.println("...........");
-    // Serial.println(tickCounter);
-    // Serial.println("...........");
-    // Serial.println(tickTarget);    
-    return true;
-  }else{
-    tickCounter = 0;
-    currentNacelleAngle = angleTarget;
-    return false;
-  }
-}
 
 
-//////////////  Communicating with UE Task ////////////// 
-//////////////  Bind with 50ms timer ////////////////////
-bool R2U(void *)
-{
-
-  if(propertyCmd == 'R'){
-    sendCommand(MasterIdx, 'R', rotationValueCmd, fluctCmd);
-  }
-  if(propertyCmd == 'N'){
-    sendCommand(MasterIdx, 'N', orientationValueCmd, fluctCmd);
-  }
-  if(propertyCmd == 'P'){
-    sendCommand(MasterIdx, 'P', pitchValueCmd, fluctCmd);
-  }
-
-  return true;
-}
-
-//////////////  Update Property Values of WT ////////////// 
-//////////////  Bind with 10ms timer //////////////////////
-bool UPDATE(void *)
-{
-  rawValue = 0;
-
-  // Continously monitoring propertyShiftFlag & idShiftFlag 
-  // When property and id stop shifting, continously read KNOB's value
-  // This algorithm aims to avoid different property values mixed together 
-  if(propertyShiftFlag != 1 && idShiftFlag != 1)
-  {
-    for(uint8_t i=0; i<5; ++i)
-    {
-      rawValue += analogRead(KNOB);
-    }
-    valueCmd = rawValue / 5;
-  }
-
-  // Received value are stored in valueCmd, whether it is RPM or Angle
-  // Use IF check value property 'R', 'N' and 'P', to process different values respectively
-  if(propertyCmd == 'R')
-  {
-    scaledValue = reScale(valueCmd, RPM_MIN, RPM_MAX);
-    valueCmd = scaledValue;
-    // Set the target rpm of the WT
-    rotationValueCmd = valueCmd;
-  }
-
-  if(propertyCmd == 'N')
-  {
-    scaledValue = reScale(valueCmd, 0, 360);
-    valueCmd = scaledValue;
-
-    // Set the target orientation angle
-    angleTarget = valueCmd;
-    orientationValueCmd = valueCmd;
-  }
-
-  if(propertyCmd == 'P')
-  {
-    scaledValue = reScale(valueCmd, PITCH_MIN, PITCH_MAX);
-    valueCmd = scaledValue;
-
-    pitchValueCmd = valueCmd;
-  }
-
-  ///////////// Control Motor ///////////////
-  // To MOTOR --> ROTOR
-  digitalWrite(PINOUT_rotorMotorDIR, HIGH);
-  rotorFrequencySetpoint = setFrequencyRotor(rotationValueCmd, 6);
-  rotor_timer.every(rotorFrequencySetpoint, move_motor);
-
-  // To MOTOR --> NACELLE
-  if(abs((int16_t)angleTarget - (int16_t)currentNacelleAngle) > 180){
-    digitalWrite(PINOUT_nacelleMotorDIR, HIGH);
-  }else{
-    digitalWrite(PINOUT_nacelleMotorDIR, LOW);
-  }
-  // Calculate equivalent ticks using angle error: target - current
-  nacelleStepSetpoint = getPulseTicks(((int16_t)angleTarget - (int16_t)currentNacelleAngle), 6);
-  tickTarget = nacelleStepSetpoint;
-  // Calculate frequency
-  nacelleFrequencySetpoint = setFrequencyNacelle(NACELLE_yawRate, 6);
-  // Serial.println("~~~~~~~~~~~~~");
-  // Serial.println(nacelleFrequencySetpoint);
-  // Serial.println("~~~~~~~~~~~~~");
-
-  nacelle_timer.every(nacelleFrequencySetpoint, move_motor_count);
-
-  // Serial.println("******************");
-  // Serial.println(currentNacelleAngle);
-  // Serial.println("******************");
-
-  return true;
-}
-/////////////////////////////////////////////////////////
 
 void setup() {
 
@@ -268,12 +153,129 @@ void loop() {
 
 }
 
+
+/********** Function definition ************\
+ ** Priodic Tasks with Arduino-timer *******
+\*******************************************/
+// toggle LED :: just indicate our program is running
+bool toggle_led(void *) {
+  digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN)); 
+  return true; // keep timer active? true
+}
+// Generate pulse to  control motor rotation :: FREE running
+bool move_motor(void *)
+{
+  digitalWrite(PINOUT_rotorMotorPUL, !digitalRead(PINOUT_rotorMotorPUL));
+  return true;
+}
+// Generate pulse to control nacelle orientation :: FIXED angle
+bool move_motor_count(void *)
+{
+  tickCounter ++;
+  digitalWrite(PINOUT_nacelleMotorPUL, !digitalRead(PINOUT_nacelleMotorPUL));
+
+  if(tickCounter < tickTarget){
+    // Serial.println("...........");
+    // Serial.println(tickCounter);
+    // Serial.println("...........");
+    // Serial.println(tickTarget);    
+    return true;
+  }else{
+    tickCounter = 0;
+    currentNacelleAngle = angleTarget;
+    return false;
+  }
+}
+
+//////////////  Communicating with UE Task ////////////// 
+//////////////  Bind with 50ms timer ////////////////////
+bool R2U(void *)
+{
+
+  if(propertyCmd == 'R'){
+    sendCommand(MasterIdx, 'R', rotationValueCmd, fluctCmd);
+  }
+  if(propertyCmd == 'N'){
+    sendCommand(MasterIdx, 'N', orientationValueCmd, fluctCmd);
+  }
+  if(propertyCmd == 'P'){
+    sendCommand(MasterIdx, 'P', pitchValueCmd, fluctCmd);
+  }
+
+  return true;
+}
+
+//////////////  Update Property Values of WT ////////////// 
+//////////////  Bind with 10ms timer //////////////////////
+bool UPDATE(void *)
+{
+  rawValue = 0;
+
+  // Continously monitoring propertyShiftFlag & idShiftFlag 
+  // When property and id stop shifting, continously read KNOB's value
+  // This algorithm aims to avoid different property values mixed together 
+  if(propertyShiftFlag != 1 && idShiftFlag != 1)
+  {
+    for(uint8_t i=0; i<5; ++i)
+    {
+      rawValue += analogRead(KNOB);
+    }
+    valueCmd = rawValue / 5;
+  }
+
+  // Received value are stored in valueCmd, whether it is RPM or Angle
+  // Use IF check value property 'R', 'N' and 'P', to process different values respectively
+  if(propertyCmd == 'R')
+  {
+    scaledValue = reScale(valueCmd, RPM_MIN, RPM_MAX);
+    valueCmd = scaledValue;
+    // Set the target rpm of the WT
+    rotationValueCmd = valueCmd;
+  }
+
+  if(propertyCmd == 'N')
+  {
+    scaledValue = reScale(valueCmd, 0, 360);
+    valueCmd = scaledValue;
+
+    // Set the target orientation angle
+    angleTarget = valueCmd;
+    orientationValueCmd = valueCmd;
+  }
+
+  if(propertyCmd == 'P')
+  {
+    scaledValue = reScale(valueCmd, PITCH_MIN, PITCH_MAX);
+    valueCmd = scaledValue;
+
+    pitchValueCmd = valueCmd;
+  }
+
+  ///////////// Control Motor ///////////////
+  // To MOTOR --> ROTOR
+  digitalWrite(PINOUT_rotorMotorDIR, HIGH);
+  rotorFrequencySetpoint = setFrequencyRotor(rotationValueCmd, 6);
+  rotor_timer.every(rotorFrequencySetpoint, move_motor);
+
+  // To MOTOR --> NACELLE
+  if(abs((int16_t)angleTarget - (int16_t)currentNacelleAngle) > 180){
+    digitalWrite(PINOUT_nacelleMotorDIR, HIGH);
+  }else{
+    digitalWrite(PINOUT_nacelleMotorDIR, LOW);
+  }
+  // Calculate equivalent ticks using angle error: target - current
+  nacelleStepSetpoint = getPulseTicks(((int16_t)angleTarget - (int16_t)currentNacelleAngle), 6);
+  tickTarget = nacelleStepSetpoint;
+  // Calculate frequency
+  nacelleFrequencySetpoint = setFrequencyNacelle(NACELLE_yawRate, 6);
+  nacelle_timer.every(nacelleFrequencySetpoint, move_motor_count);
+
+  return true;
+}
+
+
 /*********** HAVE TO PUT IN A TIMER **********/
 /******** HERE FREQ IS CONTROLLED ************/
-void rotateMotor(uint8_t outputPin)
-{
-  digitalWrite(outputPin, !digitalRead(outputPin));
-}
 
 /***** Calculate timer frequency for ROTOR *****\
 ******************* S1  S2  S3 ******************
